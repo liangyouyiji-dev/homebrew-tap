@@ -1,0 +1,77 @@
+name: Verify jnbox WinGet installation
+on:
+  push:
+    branches: [verify-winget-v5.3.0]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - name: Download verification manifest
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate, install, and uninstall from the local WinGet manifest
+        shell: pwsh
+        env:
+          JNBOX_DISABLE_ERROR_REPORT: '1'
+          JNBOX_ARCH: ${{ matrix.arch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:JNBOX_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'jnbox-config'
+          Import-Module Appx -UseWindowsPowerShell
+          $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+          if (-not $winget) {
+            Install-Module Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force
+            Repair-WinGetPackageManager -Latest
+            $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+          }
+          if ($winget) {
+            $wingetPath = $winget.Source
+          } else {
+            $installer = Get-AppxPackage Microsoft.DesktopAppInstaller
+            if (-not $installer) { throw 'App Installer was not registered' }
+            $wingetPath = Join-Path $installer.InstallLocation 'winget.exe'
+          }
+          function Invoke-WinGet {
+            & $wingetPath @args
+            if ($LASTEXITCODE -ne 0) { throw "winget $args failed with exit code $LASTEXITCODE" }
+          }
+          $manifest = 'manifests/l/Liangyouyiji/Jnbox/5.3.0'
+          Invoke-WinGet --version
+          Invoke-WinGet validate --manifest $manifest
+          Invoke-WinGet settings --enable LocalManifestFiles
+          Invoke-WinGet install --manifest $manifest --scope user --architecture $env:JNBOX_ARCH --silent --disable-interactivity
+          $link = Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Links/jnbox.exe'
+          if (-not (Test-Path $link)) { throw 'WinGet did not create the jnbox command alias' }
+          & $link version --verify-artifact --expected-version 5.3.0 --require-clean --format json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed jnbox failed release identity verification' }
+          Invoke-WinGet uninstall --id Liangyouyiji.Jnbox --exact --silent --disable-interactivity
+          if (Test-Path $link) { throw 'The jnbox command alias remains after uninstall' }
+  homebrew-macos:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+      JNBOX_DISABLE_ERROR_REPORT: '1'
+    steps:
+      - name: Install from the public Homebrew tap
+        shell: bash
+        run: |
+          export JNBOX_CONFIG_DIR="$RUNNER_TEMP/jnbox-config"
+          brew install liangyouyiji-dev/tap/jnbox
+          jnbox version --verify-artifact --expected-version 5.3.0 --require-clean --format json
+          brew test liangyouyiji-dev/tap/jnbox
+          brew uninstall liangyouyiji-dev/tap/jnbox
+          test ! -e "$(brew --prefix)/bin/jnbox"
