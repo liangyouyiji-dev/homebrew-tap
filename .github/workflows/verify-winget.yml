@@ -31,17 +31,22 @@ jobs:
           $env:JNBOX_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'jnbox-config'
           Import-Module Appx -UseWindowsPowerShell
           $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-          if (-not $winget) {
-            Install-Module Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force
-            Repair-WinGetPackageManager -Latest
-            $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-          }
+          $clientVersion = [version]'0.0'
           if ($winget) {
-            $wingetPath = $winget.Source
-          } else {
+            $current = & $winget.Source --version
+            if ($LASTEXITCODE -eq 0 -and $current -match 'v?(\d+\.\d+\.\d+)') {
+              $clientVersion = [version]$Matches[1]
+            }
+          }
+          if ($clientVersion -lt [version]'1.28.0') {
+            Write-Host "Updating WinGet $clientVersion to support the 1.28.0 manifest schema"
+            Install-Module Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force
+            Repair-WinGetPackageManager -Latest -Force
             $installer = Get-AppxPackage Microsoft.DesktopAppInstaller
             if (-not $installer) { throw 'App Installer was not registered' }
             $wingetPath = Join-Path $installer.InstallLocation 'winget.exe'
+          } else {
+            $wingetPath = $winget.Source
           }
           function Invoke-WinGet {
             & $wingetPath @args
