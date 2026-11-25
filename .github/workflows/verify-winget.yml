@@ -61,7 +61,13 @@ jobs:
           if (-not (Test-Path $link)) { throw 'WinGet did not create the jnbox command alias' }
           & $link version --verify-artifact --expected-version 5.3.0 --require-clean --format json
           if ($LASTEXITCODE -ne 0) { throw 'Installed jnbox failed release identity verification' }
-          Invoke-WinGet uninstall --id Liangyouyiji.Jnbox --exact --silent --disable-interactivity --source winget
+          $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $entries = @(Get-ChildItem $uninstallRoot | Get-ItemProperty | Where-Object {
+            $_.DisplayName -eq 'jnbox' -and $_.DisplayVersion -eq '5.3.0' -and $_.Publisher -eq 'Liangyouyiji'
+          })
+          if ($entries.Count -ne 1) { throw 'Expected one installed jnbox registry entry' }
+          Invoke-WinGet source remove --name msstore
+          Invoke-WinGet uninstall --product-code $entries[0].PSChildName --scope user --exact --silent --disable-interactivity
           if (Test-Path $link) { throw 'The jnbox command alias remains after uninstall' }
   homebrew-macos:
     runs-on: macos-15
