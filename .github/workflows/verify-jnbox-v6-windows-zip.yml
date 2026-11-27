@@ -1,0 +1,52 @@
+name: Verify jnbox v6.0.0 Windows release
+on:
+  push:
+    branches: [codex/jnbox-v6-windows-zip-qa]
+permissions:
+  contents: read
+jobs:
+  verify-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: amd64
+            archive-sha256: d7cbc490ea712be453e30082241371ccfcd457629684a4b83a84edcb66c878eb
+          - runner: windows-11-arm
+            arch: arm64
+            archive-sha256: 5500304d8419884654d1437dde184a68daffe3814611af15c2e2efee4aa156db
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Install and verify the official Windows ZIP
+        shell: pwsh
+        env:
+          JNBOX_ARCH: ${{ matrix.arch }}
+          JNBOX_ARCHIVE_SHA256: ${{ matrix.archive-sha256 }}
+          JNBOX_DISABLE_ERROR_REPORT: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '6.0.0'
+          $file = "jnbox_${version}_windows_$env:JNBOX_ARCH.zip"
+          $archive = Join-Path $env:RUNNER_TEMP $file
+          $installDir = Join-Path $env:RUNNER_TEMP 'jnbox-install'
+          $env:JNBOX_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'jnbox-config'
+          $url = "https://github.com/liangyouyiji-dev/jnbox/releases/download/v$version/$file"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $env:JNBOX_ARCHIVE_SHA256) {
+            throw 'Archive hash differs from the official release'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $installDir
+          $env:PATH = "$installDir;$env:PATH"
+          $exe = (Get-Command jnbox.exe -ErrorAction Stop).Source
+          if ($exe -ne (Join-Path $installDir 'jnbox.exe')) { throw "Unexpected jnbox command path: $exe" }
+          $result = & jnbox version --verify-artifact --expected-version $version --require-clean --format json
+          if ($LASTEXITCODE -ne 0) { throw 'jnbox version verification failed' }
+          $result | Write-Host
+          $identity = $result | Out-String | ConvertFrom-Json
+          if (-not $identity.verified -or $identity.arch -ne $env:JNBOX_ARCH -or $identity.os -ne 'windows') {
+            throw 'Unexpected Windows build identity'
+          }
+          & jnbox --help
+          if ($LASTEXITCODE -ne 0) { throw 'jnbox --help failed' }
