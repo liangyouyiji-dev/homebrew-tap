@@ -1,0 +1,90 @@
+name: Verify jnbox v6.0.0 from npm on Windows
+on:
+  push:
+    branches: [codex/jnbox-v6-windows-npm-qa]
+permissions:
+  contents: read
+jobs:
+  verify-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            cpu: x64
+            binary_arch: amd64
+            sha256: c34fa1215aedad6f3a532d0295c0637287e7e3d7cb8bb0742aed5e27e5eedc01
+          - runner: windows-11-arm
+            cpu: arm64
+            binary_arch: arm64
+            sha256: e54750fe51dbce06546e57c41e4e97409c201b65c81bdf8f211f17be9c231d9b
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '22'
+          architecture: ${{ matrix.cpu }}
+          package-manager-cache: false
+      - name: Install, upgrade, verify and uninstall from npmjs.org
+        shell: pwsh
+        env:
+          JNBOX_NODE_CPU: ${{ matrix.cpu }}
+          JNBOX_ARCH: ${{ matrix.binary_arch }}
+          JNBOX_EXPECTED_SHA256: ${{ matrix.sha256 }}
+          JNBOX_DISABLE_ERROR_REPORT: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $registry = 'https://registry.npmjs.org/'
+          $package = '@liangyouyiji/jnbox'
+          $version = '6.0.0'
+          $prefix = Join-Path $env:RUNNER_TEMP 'jnbox-npm-prefix'
+          $env:JNBOX_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'jnbox-config'
+          $env:NPM_CONFIG_CACHE = Join-Path $env:RUNNER_TEMP 'jnbox-npm-cache'
+          $env:NPM_CONFIG_USERCONFIG = Join-Path $env:RUNNER_TEMP 'jnbox.npmrc'
+          $env:NPM_CONFIG_GLOBALCONFIG = Join-Path $env:RUNNER_TEMP 'jnbox-global.npmrc'
+          $env:NPM_CONFIG_REGISTRY = $registry
+          $env:NPM_CONFIG_PREFIX = $prefix
+          $env:NPM_CONFIG_IGNORE_SCRIPTS = 'true'
+          $env:NPM_CONFIG_AUDIT = 'false'
+          $env:NPM_CONFIG_FUND = 'false'
+          Remove-Item Env:NODE_AUTH_TOKEN,Env:NPM_TOKEN -ErrorAction SilentlyContinue
+          New-Item -ItemType File -Path $env:NPM_CONFIG_USERCONFIG,$env:NPM_CONFIG_GLOBALCONFIG | Out-Null
+          $env:PATH = "$prefix;$env:PATH"
+          function Invoke-Npm {
+            & npm.cmd @args
+            if ($LASTEXITCODE -ne 0) { throw "npm $args failed" }
+          }
+          function Verify-Jnbox($expected) {
+            $shim = (Get-Command jnbox.cmd -ErrorAction Stop).Source
+            if ($shim -ne (Join-Path $prefix 'jnbox.cmd')) { throw "Unexpected npm shim path: $shim" }
+            $output = & $shim version --verify-artifact --expected-version $expected --require-clean --format json
+            if ($LASTEXITCODE -ne 0) { throw 'jnbox version verification failed' }
+            $output | Write-Host
+            $identity = $output | Out-String | ConvertFrom-Json
+            if (-not $identity.verified -or $identity.arch -ne $env:JNBOX_ARCH -or $identity.os -ne 'windows') {
+              throw 'Unexpected Windows build identity'
+            }
+          }
+          $cpu = & node -p 'process.arch'
+          if ($LASTEXITCODE -ne 0 -or $cpu -ne $env:JNBOX_NODE_CPU) { throw 'Unexpected Node architecture' }
+          node --version
+          Invoke-Npm --version
+          $current = Invoke-Npm view $package dist-tags.latest --json
+          if (($current | ConvertFrom-Json) -ne $version) { throw "npm latest does not resolve to $version" }
+          Invoke-Npm install -g $package
+          Verify-Jnbox $version
+          $globalRoot = (Invoke-Npm root -g).Trim()
+          $binary = & node -e 'const p=require("node:path"); const root=p.join(process.argv[1],"@liangyouyiji","jnbox"); const m=require.resolve("@liangyouyiji/jnbox-win32-"+process.argv[2]+"/package.json",{paths:[root]}); console.log(p.join(p.dirname(m),"jnbox.exe"));' $globalRoot $cpu
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $env:JNBOX_EXPECTED_SHA256) {
+            throw 'Installed executable differs from the signed GitHub release'
+          }
+          Invoke-Npm uninstall -g $package
+          if (Test-Path (Join-Path $prefix 'jnbox.cmd')) { throw 'The npm command remains after uninstall' }
+          Invoke-Npm exec --yes --package $package -- jnbox --help
+          Invoke-Npm install -g "$package@5.3.0"
+          Verify-Jnbox '5.3.0'
+          Invoke-Npm install -g "$package@latest"
+          Verify-Jnbox $version
+          Invoke-Npm uninstall -g $package
+          if (Test-Path (Join-Path $prefix 'jnbox.cmd')) { throw 'The npm command remains after uninstall' }
